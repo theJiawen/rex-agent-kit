@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# rex-wall: tile every tab of a Rex session into one grid tab, and put them back.
+#   rex-wall              toggle: tile the tabs, or put them back if already tiled
+#   rex-wall on | off     tile / put back
+#   rex-wall -s SESSION   another session (default: the one you're in, or the only one there is)
+#   rex-wall --dry-run    show the grid it would make, change nothing
+# Programs keep running through both moves (Rex moves panes, it doesn't restart them).
+# The tabs' names and order are saved in ~/.local/state/rex-wall/ while tiled.
+set -euo pipefail
+
+# Run from a Rex key, the PATH is the server's bare one: add where rex and jq usually live.
+PATH="$PATH:$HOME/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+session=${REX_SESSION:-}
+mode=toggle
+dry=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    -s|--session) session=$2; shift 2 ;;
+    on|off|toggle) mode=$1; shift ;;
+    -n|--dry-run) dry=1; shift ;;
+    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "rex-wall: unknown argument: $1 (see rex-wall --help)" >&2; exit 2 ;;
+  esac
+done
+
+if [ -z "$session" ]; then
+  sessions=($(rex ls --json | jq -r '.sessions[].session_id'))
+  [ ${#sessions[@]} = 1 ] || { echo "rex-wall: ${#sessions[@]} sessions: pick one with -s SESSION" >&2; exit 2; }
+  session=${sessions[0]}
+fi
+view=$(rex session inspect "$session" --json)
+sid=$(jq -r .session_id <<<"$view")
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/rex-wall
+state=$state_dir/${sid#session:}.json
+
+# Place BLOCK after ANCHOR (right of it, or below it with "vertical"); ANCHOR keeps FRACTION.
+move() {
+  rex api call -s "$sid" session.move_block "$(jq -nc --arg b "$1" --arg a "$2" --arg d "$3" --argjson r "$4" \
+    '{block_id: $b, anchor_block_id: $a, direction: $d, side: "after", ratio: $r}')" </dev/null >/dev/null
+}
+frac() { awk -v k="$1" 'BEGIN { printf "%.6f", 1 / k }'; }
+
+# A row of panes side by side, each the same width: IDS... (the first is already placed).
+row() {
+  local m=$# j=1 prev=$1
+  shift
+  for b in "$@"; do
+    move "$b" "$prev" horizontal "$(frac $((m - j + 1)))"
+    prev=$b
+    j=$((j + 1))
+  done
+}
+
+walled=0
+if [ -f "$state" ]; then
+  wall=$(jq -r .wall_window_id "$state")
+  if jq -e --arg w "$wall" 'any(.windows[]; .window_id == $w)' <<<"$view" >/dev/null; then
+    walled=1
+  else
+    rm -f "$state"   # the wall tab was closed by hand: nothing to put back
+  fi
+fi
+[ "$mode" = toggle ] && { [ $walled = 1 ] && mode=off || mode=on; }
+
+if [ "$mode" = on ]; then
+  [ $walled = 1 ] && { echo "Already tiled. rex-wall off puts the tabs back."; exit 0; }
+  saved=$(jq --arg sid "$sid" '{
+      session_id: $sid,
+      wall_window_id: null,
+      active_block_id: (first(.active_window_id as $a | .windows[] | select(.window_id == $a) | .focused_block_id) // null),
+      windows: [.windows[]
+        | {window_id, label, blocks: [.layers[] | select(.kind == "tiled") | .blocks[] | {block_id, label}]}
+        | select(.blocks | length > 0)]
+    }' <<<"$view")
+  ids=($(jq -r '.windows[].blocks[].block_id' <<<"$saved"))
+  n=${#ids[@]}
+  [ "$n" -lt 2 ] && { echo "Only $n pane in this session: nothing to tile."; exit 0; }
+
+  # Rows of near-equal length, wider than tall: 4 → 2×2, 6 → 2×3, 7 → 4+3, 9 → 3×3.
+  rows=1
+  while [ $(((rows + 1) * (rows + 1))) -le "$n" ]; do rows=$((rows + 1)); done
+  base=$((n / rows)) extra=$((n % rows)) at=0
+  for ((i = 0; i < rows; i++)); do
+    size=$base
+    [ $i -lt $extra ] && size=$((base + 1))
+    starts[i]=$at sizes[i]=$size
+    at=$((at + size))
+  done
+
+  if [ $dry = 1 ]; then
+    echo "Would tile $n panes into one tab, $rows row(s):"
+    names=($(jq -r '.windows[] | .label as $w | .blocks[] | ($w | gsub(" "; "_"))' <<<"$saved"))
+    for ((i = 0; i < rows; i++)); do echo "  ${names[*]:${starts[i]}:${sizes[i]}}"; done
+    exit 0
+  fi
+
+  mkdir -p "$state_dir"
+  created=$(rex window new -s "$sid" "$n agents" --json)
+  wall=$(jq -r .window_id <<<"$created")
+  spare=$(jq -r '.block_ids[0]' <<<"$created")
+  jq --arg w "$wall" '.wall_window_id = $w' <<<"$saved" >"$state"   # saved before any move, so off works even if this stops halfway
+
+  move "${ids[0]}" "$spare" horizontal 0.5
+  rex block close -s "$sid" "$spare" </dev/null >/dev/null
+  for ((k = 1; k < rows; k++)); do   # the first pane of each row, stacked
+    move "${ids[starts[k]]}" "${ids[starts[k - 1]]}" vertical "$(frac $((rows - k + 1)))"
+  done
+  for ((i = 0; i < rows; i++)); do row "${ids[@]:${starts[i]}:${sizes[i]}}"; done
+
+  # A pane alone in its tab takes the tab's name, so the grid says what each one is doing.
+  jq -r '.windows[] | select(.blocks | length == 1) | [.blocks[0].block_id, .label] | @tsv' "$state" |
+    while IFS=$'\t' read -r b label; do rex block rename -s "$sid" "$b" "$label" </dev/null >/dev/null; done
+  active=$(jq -r '.active_block_id // empty' "$state")
+  [ -n "$active" ] && rex focus -s "$sid" "$active" >/dev/null
+  echo "Tiled $n panes from $(jq '.windows | length' "$state") tabs into \"$n agents\" ($rows row(s)). Run rex-wall again to put them back."
+else
+  [ $walled = 0 ] && { echo "Not tiled: nothing to put back."; exit 0; }
+  live=$(jq -c '[.windows[].layers[].blocks[].block_id]' <<<"$view")
+  focused=$(jq -r --arg w "$wall" '.windows[] | select(.window_id == $w) | .focused_block_id // empty' <<<"$view")
+  [ $dry = 1 ] && { echo "Would put back: $(jq -r '[.windows[].label] | join(", ")' "$state")"; exit 0; }
+
+  back=0
+  while IFS= read -r win; do
+    label=$(jq -r .label <<<"$win")
+    bs=($(jq -r --argjson live "$live" '.blocks[].block_id | select(IN($live[]))' <<<"$win"))
+    [ ${#bs[@]} = 0 ] && continue   # its program ended while tiled
+    spare=$(rex window new -s "$sid" "$label" --focus=false --json </dev/null | jq -r '.block_ids[0]')
+    move "${bs[0]}" "$spare" horizontal 0.5
+    rex block close -s "$sid" "$spare" </dev/null >/dev/null
+    row "${bs[@]}"
+    jq -r '.blocks[] | [.block_id, .label] | @tsv' <<<"$win" | while IFS=$'\t' read -r b old; do
+      jq -e --arg b "$b" 'any(.[]; . == $b)' <<<"$live" >/dev/null && rex block rename -s "$sid" "$b" "$old" </dev/null >/dev/null
+    done
+    back=$((back + ${#bs[@]}))
+  done < <(jq -c '.windows[]' "$state")
+
+  [ -z "$focused" ] && focused=$(jq -r '.active_block_id // empty' "$state")
+  [ -n "$focused" ] && rex focus -s "$sid" "$focused" >/dev/null 2>&1 || true
+  rm -f "$state"
+  left=$(rex session inspect "$sid" --json | jq --arg w "$wall" '[.windows[] | select(.window_id == $w) | .layers[].blocks[]] | length')
+  msg="Put $back pane(s) back in their own tabs."
+  [ "$left" != 0 ] && msg="$msg $left pane(s) opened while tiled stay in the \"agents\" tab."
+  echo "$msg"
+fi
