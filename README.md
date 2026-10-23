@@ -27,6 +27,33 @@ require("agent-kit.new-claude"){ key = "cmd+shift+c" }
 
 and run `rex config check && rex config reload`. Both also show in the command palette.
 
+## Install with your agent
+
+Paste this to Claude Code, Codex or any agent with a shell:
+
+```text
+Install https://github.com/theJiawen/rex-agent-kit for me
+```
+
+### Steps for the agent
+
+1. Check that `rex` and `jq` run (`rex version`, `jq --version`). Without Rex, stop and say so.
+2. Clone the repo to `~/code/rex-agent-kit`, or `git pull` if it's already there.
+3. Link `lua/` into Rex's config folder (`$XDG_CONFIG_HOME/rex`, else `~/.config/rex`) as `agent-kit`, and, if
+   `~/.local/bin` is on `PATH`, `bin/rex-wall` into it. If either path exists and isn't this link, ask before
+   replacing it.
+4. Run `rex keymap`. If `shift+cmd+a` or `shift+cmd+c` is already bound, ask which key to use instead.
+5. Add the two `require` lines above to `init.lua` (create it if missing). Add only what isn't there, and leave the
+   rest of the file as it is.
+6. Run `rex config check`, then `rex config reload`. On an error, show it and take your lines out again.
+7. Confirm with `rex actions | grep -E 'agent_wall|new_claude'`, and tell the person their keys.
+
+### Using it from an agent
+
+- `rex-wall` toggles the wall for the session the agent runs in (`REX_SESSION`); `-s SESSION` picks another.
+- `rex-wall --dry-run` shows the grid it would make without moving anything.
+- `rex do -s SESSION agent_wall` does the same through Rex, when `rex-wall` isn't on `PATH`.
+
 ## Agent Wall
 
 The grid is rows of near-equal length, wider than tall: 4 tabs make 2×2, 6 make 2×3, 7 make 4 + 3. Each pane takes
