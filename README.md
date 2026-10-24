@@ -2,6 +2,8 @@
 
 Small tools for running a lot of coding agents in [Rex](https://www.superlogical.com/rex), one tab each.
 
+![Six Claude Code agents, each in its own tab, then all on one screen with Cmd+Shift+A, and back](docs/agent-wall.gif)
+
 - **Agent Wall** (`Cmd+Shift+A`): every tab of the session you're looking at, tiled into one grid tab, so you can
   watch all your agents work at once. Press it again and each one goes back to its own tab, named as before. Nothing
   restarts: Rex moves the panes, and the programs in them keep running.
@@ -86,6 +88,13 @@ require("agent-kit.new-claude"){
 ```
 
 Call it more than once with a different `name` (and `title`) for one key per project.
+
+## Record a demo
+
+`demo/start.sh` opens a Rex session of 6 Claude Code agents, each on a real task in its own copy of a small store
+project under `/tmp/rex-demo` (permission prompts off, on Sonnet), so a recording shows none of your own work. The
+tasks go out 15 seconds after it starts, so you can start recording first. `demo/start.sh --stand-ins` uses
+make-believe agents instead (no Claude), and `demo/start.sh --stop` closes it and puts the app back.
 
 ## License
 
