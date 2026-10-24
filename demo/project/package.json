@@ -1,0 +1,7 @@
+{
+  "name": "tinyshop",
+  "version": "0.1.0",
+  "description": "A tiny store library for the rex-agent-kit demo: a few real bugs and slow spots for agents to work on.",
+  "type": "module",
+  "scripts": { "test": "node --test" }
+}
